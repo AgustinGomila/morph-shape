@@ -1,4 +1,3 @@
-@ -1,1189 +1,1711 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -318,7 +317,7 @@
         </div>
         <div class="row">
             <label>Grosor canto</label>
-            <input type="range" id="sRim" min="5" max="50" value="22" step="1">
+            <input type="range" id="sRim" min="0" max="50" value="22" step="1">
             <span class="v" id="vRim">22%</span>
             <button class="play-btn" id="pRim" title="Animar">▶</button>
         </div>
@@ -328,11 +327,26 @@
             <span class="v" id="vRot">270°</span>
             <button class="play-btn" id="pRot" title="Animar">▶</button>
         </div>
+        <div class="row shadow-row" style="display:none">
+            <label>Luz dirección</label>
+            <input type="range" id="sShdDir" min="0" max="360" value="135" step="1">
+            <span class="v" id="vShdDir">135°</span>
+            <button class="play-btn" id="pShdDir" title="Animar">▶</button>
+        </div>
+        <div class="row shadow-row" style="display:none">
+            <label>Luz elevación</label>
+            <input type="range" id="sShdEl" min="5" max="175" value="90" step="1">
+            <span class="v" id="vShdEl">90°</span>
+            <button class="play-btn" id="pShdEl" title="Animar">▶</button>
+        </div>
 
         <div class="chip-group">
             <span class="chip-label">Eje</span>
             <span class="ch on" id="cV">Vertical</span>
             <span class="ch" id="cH">Horizontal</span>
+            <div class="divider"></div>
+            <span class="ch" id="cShadow"><span class="dot" style="background:#64748b"></span>sombra</span>
+            <span class="ch" id="cApoyo"><span class="dot" style="background:#FF9500"></span>apoyo</span>
             <div class="divider"></div>
             <span class="ch" id="cTS"><span class="dot" style="background:#0F6E56"></span>tS</span>
             <span class="ch" id="cTE"><span class="dot" style="background:#854F0B"></span>tE</span>
@@ -360,6 +374,8 @@
             rotDeg: 270,      // rotación de la forma en el plano (°)
             axisH: false,     // eje de giro: false = vertical, true = horizontal
             showTS: false, showTE: false, showPole: false, showCircles: false, // marcadores opcionales
+            showShadow: false, shadowDir: 135, shadowElev: 90, // sombra proyectada
+            showApoyo: false, // indicador de zona de apoyo
         };
 
         // ╭──────────────────────────────────────────────────────────────────╮
@@ -440,7 +456,10 @@
                 const mcy = V.reduce((s, v) => s + v[1], 0) / n;
                 rMax = Math.min(...V.map(v => dist(v, [mcx, mcy])));
             }
-            return Math.max(0, Math.min(req, rMax));
+            // Margen sub-pixel: evita que r alcance rMax exacto, donde los N centros
+            // de círculo convergen al mismo punto. Con ca<0 los arcos solapan sobre el
+            // mismo círculo generando doble trazo. Reducción 0.01 % → sub-pixel. Imperceptible.
+            return Math.max(0, Math.min(req, rMax * (1 - 1e-4)));
         }
 
         // Calcula, para cada vértice i:
@@ -464,10 +483,67 @@
 
             // Para el punto de "entrada" (inc=true) la arista relevante es la previa,
             // para el de "salida" la actual.
+            //
+            // Además, se limita h para que el punto tS[i] (inc) o tE[i] (!inc)
+            // no entre en el círculo de NINGÚN otro vértice — evitando así los cruces
+            // de arco que aparecen cuando r se acerca a rMax con ca<0.
+            //
+            // La condición dist(t?[vi], aC[adj]) ≥ r se traduce en:
+            //   cos(aB[vi] ± h − θ_d) ≤ D/(2r)
+            // donde θ_d = dirección aC[vi]→aC[adj] y D = dist entre centros.
+            // Hay dos cotas de h (entrada y salida de la "zona peligrosa"); se usa la
+            // que sea menor que h_raw y mayor que cero.
             function hs(vi, inc) {
                 const ei = inc ? (vi - 1 + n) % n : vi;
                 const raw = h0[vi] * (1 - ca(ei) * r / Re);
-                return Math.max(1e-4, Math.min(2 * PI - 1e-4, raw));
+                let h = Math.max(1e-4, Math.min(2 * PI - 1e-4, raw));
+
+                // Normaliza un ángulo a [0, 2π). Definida fuera del loop para no recrearla.
+                const norm2pi = (a) => ((a % (2 * PI)) + 2 * PI) % (2 * PI);
+
+                for (let adj = 0; adj < n; adj++) {
+                    if (adj === vi) continue;
+
+                    const dx = aC[adj][0] - aC[vi][0];
+                    const dy = aC[adj][1] - aC[vi][1];
+                    const D = Math.hypot(dx, dy);
+                    if (D < 1e-9 || D >= 2 * r - 1e-6) continue;
+
+                    // semi-apertura de la zona peligrosa
+                    const cosLim = D / (2 * r);
+                    const thetaLim = Math.acos(Math.max(-1 + 1e-9, cosLim));
+                    const thetaD = Math.atan2(dy, dx);
+
+                    // phi = aB[vi] ± h − thetaD  (− para tS/inc, + para tE/!inc).
+                    // Peligroso cuando |phi| < thetaLim; seguro cuando |phi| ≥ thetaLim.
+                    // Las dos cotas "seguras" (donde phi = ±thetaLim):
+                    //   inc (tS, ángulo aB−h, decrece al crecer h):
+                    //     safe-upper: aB - h - thetaD = +thetaLim → h = aB - thetaD - thetaLim
+                    //     safe-lower: aB - h - thetaD = -thetaLim → h = aB - thetaD + thetaLim
+                    //   !inc (tE, ángulo aB+h, crece con h):
+                    //     safe-lower: aB + h - thetaD = -thetaLim → h = thetaD - thetaLim - aB
+                    //     safe-upper: aB + h - thetaD = +thetaLim → h = thetaD + thetaLim - aB
+                    //
+                    // De las dos cotas, elegimos la que sea el LÍMITE INFERIOR del
+                    // rango peligroso (la menor h-positiva que deja el punto seguro).
+
+                    let hA, hB;
+                    if (inc) {
+                        hA = norm2pi(aB[vi] - thetaD - thetaLim);
+                        hB = norm2pi(aB[vi] - thetaD + thetaLim);
+                    } else {
+                        hA = norm2pi(thetaD - thetaLim - aB[vi]);
+                        hB = norm2pi(thetaD + thetaLim - aB[vi]);
+                    }
+                    // hA y hB son los dos ángulos de "frontera" en [0, 2π).
+                    // La cota útil es la más pequeña que sea ≥ 1e-4.
+                    const hLim = (hA > 1e-4 && hA < hB) ? hA
+                        : (hB > 1e-4) ? hB
+                            : 1e-4;
+                    if (hLim < h) h = Math.max(1e-4, hLim);
+                }
+
+                return h;
             }
 
             const tS = V.map((_, i) => {
@@ -657,7 +733,7 @@
         // axisH=true (ver draw()), de modo que aquí todo se computa como si
         // el eje de giro fuera siempre vertical. Eso simplifica las proyecciones:
         // sólo se comprime en X por el factor sc (coseno del ángulo de giro).
-        function drawCantoPoly(c, Veff, r, Re, ca, sc, rimW, ns, cx, cy) {
+        function drawCantoPoly(c, Veff, r, Re, ca, sc, rimW, ns, cx, cy, edgeC, shadowMode = false) {
             const n = Veff.length;
             const rE = clampedR(Veff, r);
             const {tS, tE, aC} = computeTang(Veff, rE, Re, ca);
@@ -665,9 +741,7 @@
             // Proyecciones: pV mapea puntos, pT mapea tangentes (mismo factor en X).
             const pV = p => [cx + (p[0] - cx) * sc, p[1]];
             const pT = t => [t[0] * sc, t[1]];
-            const avV = p => (p[0] - cx) * sc;  // componente X proyectada relativa al centro
 
-            const tSp = tS.map(pV), tEp = tE.map(pV);
             const rdx = ns * rimW;
 
             // Ángulos de tS/tE respecto de cada centro de esquina (para drawBezierArc).
@@ -693,9 +767,13 @@
             //   reverse=false → lateral CCW (offset=rdx): va por el lado visible
             //                   del círculo de esquina (donde está el vértice).
             //   reverse=true  → frontal CW  (sin offset): retrace del lado visible.
+            // Guarda: si from y to son el mismo punto (ángulo idéntico), el tramo
+            // tiene longitud cero — se omite para evitar que drawBezierArc
+            // expanda el span=0 a 2π y dibuje un círculo completo.
             function halfArc(from, to, C, reverse) {
                 const aS = Math.atan2(from[1] - C[1], from[0] - C[0]);
                 const aE = Math.atan2(to[1] - C[1], to[0] - C[0]);
+                if (Math.abs(aS - aE) < 1e-6) return; // arco degenerado, omitir
                 drawBezierArc(c, aS, aE, C, rE,
                     {projPoint: pV, projTan: pT, offsetDx: reverse ? 0 : rdx, cw: reverse});
             }
@@ -713,8 +791,7 @@
             }
 
             // Punto extremo vertical (arriba si isBot=false, abajo si isBot=true)
-            // del arco de esquina i — en espacio original, no proyectado.
-            // Cuando el extremo cae dentro del arco, lo usamos como polo.
+            // del arco de esquina i en espacio original (sin proyectar).
             function arcExtreme(i, isBot) {
                 const target = isBot ? PI / 2 : -PI / 2;
                 let span = aE_arr[i] - aS_arr[i];
@@ -724,115 +801,418 @@
                 if (off <= span + 1e-6) {
                     return [aC[i][0] + rE * Math.cos(target), aC[i][1] + rE * Math.sin(target)];
                 }
-                // Fuera del arco: el extremo es uno de los puntos tangentes.
                 return isBot ? (tS[i][1] >= tE[i][1] ? tS[i] : tE[i])
                     : (tS[i][1] <= tE[i][1] ? tS[i] : tE[i]);
             }
 
             // ────────────────────────────────────────────────────────────────
-            // 6.b. Determinación de los polos y la secuencia de arcos
+            // 6.b.  Helpers para polo en arista convexa (De Casteljau)
+            // ────────────────────────────────────────────────────────────────
+            //
+            // Con ca > 0 (aristas convexas), el bezier de una arista puede
+            // superar verticalmente el extremo de cualquier arco de esquina.
+            // Se calculan los extremos verticales de cada arista proyectada
+            // resolviendo B'y(t) = 0 (cuadrática analítica), y se usan De
+            // Casteljau para dividir el bezier exactamente en el polo.
+
+            function lerp2(A, B, t) {
+                return [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1])];
+            }
+
+            // Puntos de control de arista i (tE[i]→tS[next]) en espacio proyectado.
+            function edgeCPs(i) {
+                const nx = (i + 1) % n;
+                const fr = tE[i], to = tS[nx];
+                const P0 = pV(fr), P3 = pV(to);
+                const h = dist(fr, to) / 3;
+                const tf = pT(tanAt(fr, aC[i]));
+                const tt = pT(tanAt(to, aC[nx]));
+                return [P0,
+                    [P0[0] + h * tf[0], P0[1] + h * tf[1]],
+                    [P3[0] - h * tt[0], P3[1] - h * tt[1]],
+                    P3];
+            }
+
+            // Evalúa el bezier cúbico P = [P0,P1,P2,P3] en t.
+            function bezierEval(P, t) {
+                const mt = 1 - t;
+                return [mt * mt * mt * P[0][0] + 3 * mt * mt * t * P[1][0] + 3 * mt * t * t * P[2][0] + t * t * t * P[3][0],
+                    mt * mt * mt * P[0][1] + 3 * mt * mt * t * P[1][1] + 3 * mt * t * t * P[2][1] + t * t * t * P[3][1]];
+            }
+
+            // t ∈ (0,1) donde dBy/dt = 0  (extremos verticales de la arista).
+            function bezierYExtrT(P) {
+                const a = P[1][1] - P[0][1];
+                const b = P[2][1] - P[1][1];
+                const cv = P[3][1] - P[2][1];
+                const A = a - 2 * b + cv, B2 = b - a, C = a;
+                const res = [];
+                if (Math.abs(A) < 1e-9) {
+                    if (Math.abs(B2) > 1e-9) {
+                        const t = -C / (2 * B2);
+                        if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
+                    }
+                } else {
+                    const disc = B2 * B2 - A * C;
+                    if (disc >= 0) {
+                        const sq = Math.sqrt(disc);
+                        for (const s of [-1, 1]) {
+                            const t = (-B2 + s * sq) / A;
+                            if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
+                        }
+                    }
+                }
+                return res;
+            }
+
+            // De Casteljau — 2ª mitad: de B(t) a P[3].
+            // Asume cursor en B(t)+(dx,0).
+            function bezierSecondHalf(ctx, P, t, dx) {
+                const M12 = lerp2(P[1], P[2], t);
+                const M23 = lerp2(P[2], P[3], t);
+                const M123 = lerp2(M12, M23, t);
+                ctx.bezierCurveTo(M123[0] + dx, M123[1],
+                    M23[0] + dx, M23[1],
+                    P[3][0] + dx, P[3][1]);
+            }
+
+            // De Casteljau — 1ª mitad: de P[0] a B(t).
+            // Asume cursor en P[0]+(dx,0).
+            function bezierFirstHalf(ctx, P, t, dx) {
+                const M01 = lerp2(P[0], P[1], t);
+                const M12 = lerp2(P[1], P[2], t);
+                const M23 = lerp2(P[2], P[3], t);
+                const M012 = lerp2(M01, M12, t);
+                const M123 = lerp2(M12, M23, t);
+                const Bt = lerp2(M012, M123, t);
+                ctx.bezierCurveTo(M01[0] + dx, M01[1],
+                    M012[0] + dx, M012[1],
+                    Bt[0] + dx, Bt[1]);
+            }
+
+            // ────────────────────────────────────────────────────────────────
+            // 6.c. Determinación de polos (arcos de esquina + aristas convexas)
             // ────────────────────────────────────────────────────────────────
 
-            // Todos los arcos son visibles (regresión solucionada en una versión
-            // anterior: un filtro previo omitía arcos y causaba saltos no adyacentes).
-            // Por eso la estructura de "cruces de eje" para rellenar huecos ya no
-            // es necesaria, y la eliminamos por completo en la refactorización.
             const arcTops = [], arcBots = [];
             const candidates = [];
+
             for (let i = 0; i < n; i++) {
                 arcTops[i] = arcExtreme(i, false);
                 arcBots[i] = arcExtreme(i, true);
-                candidates.push(pV(arcTops[i]), pV(arcBots[i]));
-            }
-
-            // Polos = candidato más alto (poleS) y más bajo (poleE) en pantalla.
-            let poleS = candidates[0], poleE = candidates[0];
-            for (const pt of candidates) {
-                if (pt[1] < poleS[1]) poleS = pt;
-                if (pt[1] > poleE[1]) poleE = pt;
-            }
-
-            // Busca qué arco contiene cada polo (poleS → top, poleE → bot).
-            // Sustituye los dos bloques casi idénticos del código original.
-            function findArcContainingPole(pole, extremes) {
-                for (let i = 0; i < n; i++) {
-                    if (dist(pole, pV(extremes[i])) < 0.5) return i;
+                candidates.push({type: 'arc', isTop: true, idx: i, pt: pV(arcTops[i])});
+                candidates.push({type: 'arc', isTop: false, idx: i, pt: pV(arcBots[i])});
+                // Extremos verticales de la arista bezier i.
+                // Sólo son relevantes si superan el rango Y de los propios extremos:
+                // una arista convexa real sale de ese rango; una arista horizontal o
+                // recta puede devolver raíces numéricas espurias dentro del rango.
+                const cps = edgeCPs(i);
+                const epYMin = Math.min(cps[0][1], cps[3][1]);
+                const epYMax = Math.max(cps[0][1], cps[3][1]);
+                for (const t of bezierYExtrT(cps)) {
+                    const pt = bezierEval(cps, t);
+                    if (pt[1] < epYMin - 0.5 || pt[1] > epYMax + 0.5) {
+                        candidates.push({type: 'edge', edgeIdx: i, t, pt});
+                    }
                 }
-                return -1;
             }
 
-            const startIdx = findArcContainingPole(poleS, arcTops);
-            const endIdx = findArcContainingPole(poleE, arcBots);
-            if (startIdx < 0 || endIdx < 0) return null;
+            let poleSCand = candidates[0], poleECand = candidates[0];
+            for (const cand of candidates) {
+                // Empate en Y (< 0.5 px): prevalece el más cercano al canto (mayor ns·X).
+                const dy_s = cand.pt[1] - poleSCand.pt[1];
+                const dy_e = cand.pt[1] - poleECand.pt[1];
+                if (dy_s < -0.5 || (Math.abs(dy_s) <= 0.5 && ns * cand.pt[0] > ns * poleSCand.pt[0])) poleSCand = cand;
+                if (dy_e > 0.5 || (Math.abs(dy_e) <= 0.5 && ns * cand.pt[0] > ns * poleECand.pt[0])) poleECand = cand;
+            }
+            const poleS = poleSCand.pt, poleE = poleECand.pt;
 
-            // Secuencia de arcos a recorrer en el lado derecho (de startIdx a endIdx).
+            const startOnEdge = poleSCand.type === 'edge';
+            const endOnEdge = poleECand.type === 'edge';
+            // startArc: primer arco completo a recorrer (después del polo de inicio)
+            // endArc:   último arco completo a recorrer (antes del polo de fin)
+            const startArc = startOnEdge ? (poleSCand.edgeIdx + 1) % n : poleSCand.idx;
+            const endArc = endOnEdge ? poleECand.edgeIdx : poleECand.idx;
+            const startT = startOnEdge ? poleSCand.t : 0;
+            const endT = endOnEdge ? poleECand.t : 0;
+
+            // CPs de las aristas polo, más su versión invertida (para la VUELTA).
+            const revP = P => [P[3], P[2], P[1], P[0]];
+            const startECPs = startOnEdge ? edgeCPs(poleSCand.edgeIdx) : null;
+            const endECPs = endOnEdge ? edgeCPs(poleECand.edgeIdx) : null;
+            const startECPsRev = startECPs ? revP(startECPs) : null;
+            const endECPsRev = endECPs ? revP(endECPs) : null;
+
+            // Secuencia de arcos a recorrer (de startArc a endArc, inclusive).
             const arcSeq = [];
-            let cur = startIdx;
-            while (true) {
-                arcSeq.push(cur);
-                if (cur === endIdx) break;
-                cur = (cur + 1) % n;
-                if (arcSeq.length > n + 2) break; // safeguard
+            {
+                let cur = startArc;
+                while (true) {
+                    arcSeq.push(cur);
+                    if (cur === endArc) break;
+                    cur = (cur + 1) % n;
+                    if (arcSeq.length > n + 2) break;
+                }
             }
 
+            // Caso original: ambos polos en el mismo arco (aristas no convexas).
+            const singleArcSimple = arcSeq.length === 1 && !startOnEdge && !endOnEdge;
+
             // ────────────────────────────────────────────────────────────────
-            // 6.c. Dibujo del contorno del canto (ida lateral + vuelta frontal)
+            // 6.d. Dibujo del contorno del canto (ida lateral + vuelta frontal)
             // ────────────────────────────────────────────────────────────────
             //
-            // La ruta de IDA (reverse=false) va en CCW con offset rdx, trazando
-            // el perfil exterior (cara trasera) del canto.
-            // La ruta de VUELTA (reverse=true) va en CW sin offset, retraceando
-            // el mismo perfil pero del lado frontal — pasando por el mismo lado
-            // del círculo de esquina que la ida, nunca por el interior de la forma.
+            // IDA   (CCW, offset rdx): perfil exterior del canto.
+            // VUELTA (CW,  sin offset): retrace del mismo perfil, cara frontal.
             //
-            // Cuando arcSeq.length === 1, un único arco de esquina contiene ambos
-            // polos (ocurre en cápsulas con aristas cóncavas donde h > π/2).
-            // En ese caso se dibuja un medio-arco continuo de polo a polo, sin el
-            // split en tE/tS que causaría discontinuidades y lazos espurios.
+            // Cuando el polo está en el interior de una arista (startOnEdge /
+            // endOnEdge), De Casteljau divide ese bezier exactamente en el polo:
+            //   · IDA inicio:  2ª mitad de startEdge → arcVertex(startArc) normal
+            //   · IDA fin:     1ª mitad de endEdge   (el arcVertex ya se dibujó)
+            //   · VUELTA: simétrico, con las CPs invertidas.
+            //
+            // 8 casos (startOnEdge × endOnEdge × arcSeq.length) verificados.
 
             c.moveTo(poleS[0] + rdx, poleS[1]);
 
-            // --- Tramo lateral (ida, CCW, con offset rdx) ------------------
-            if (arcSeq.length === 1) {
-                // Caso especial: medio-arco continuo de polo a polo.
-                halfArc(arcTops[startIdx], arcBots[startIdx], aC[startIdx], false);
+            // ─── IDA ──────────────────────────────────────────────────────
+            if (singleArcSimple) {
+                halfArc(arcTops[startArc], arcBots[startArc], aC[startArc], false);
             } else {
-                halfArc(arcTops[startIdx], tE[startIdx], aC[startIdx], false);
-                for (let k = 1; k < arcSeq.length - 1; k++) {
-                    edge(arcSeq[k - 1], arcSeq[k], false);
-                    arcVertex(arcSeq[k], false);
+                // Pieza de inicio
+                if (startOnEdge) {
+                    bezierSecondHalf(c, startECPs, startT, rdx);
+                    // Dibuja arcVertex sólo si hay más arcos por visitar, o si
+                    // el fin también está en arista (endOnEdge exige el arco completo).
+                    if (arcSeq.length > 1 || endOnEdge) arcVertex(startArc, false);
+                } else {
+                    halfArc(arcTops[startArc], tE[startArc], aC[startArc], false);
                 }
-                const last = arcSeq[arcSeq.length - 1];
-                edge(arcSeq[arcSeq.length - 2], last, false);
-                halfArc(tS[last], arcBots[last], aC[last], false);
+
+                // Cadena intermedia: aristas + arcos entre startArc y endArc
+                for (let k = 1; k < arcSeq.length; k++) {
+                    const isLast = k === arcSeq.length - 1;
+                    edge(arcSeq[k - 1], arcSeq[k], false);
+                    // Para el último arco: arcVertex sólo si el fin está en arista.
+                    if (!isLast || endOnEdge) arcVertex(arcSeq[k], false);
+                }
+
+                // Pieza de fin
+                if (endOnEdge) {
+                    bezierFirstHalf(c, endECPs, endT, rdx);
+                } else {
+                    const last = arcSeq[arcSeq.length - 1];
+                    halfArc(tS[last], arcBots[last], aC[last], false);
+                }
             }
 
-            // --- Cierre transversal entre caras ---------------------------
+            // ─── Cierre transversal ────────────────────────────────────────
             c.lineTo(poleE[0], poleE[1]);
 
-            // --- Tramo frontal (vuelta, CW, sin offset) -------------------
-            if (arcSeq.length === 1) {
-                // Caso especial: medio-arco continuo de polo a polo en sentido CW.
-                halfArc(arcBots[startIdx], arcTops[startIdx], aC[startIdx], true);
+            // ─── VUELTA ────────────────────────────────────────────────────
+            if (singleArcSimple) {
+                halfArc(arcBots[startArc], arcTops[startArc], aC[startArc], true);
             } else {
                 const last = arcSeq[arcSeq.length - 1];
-                halfArc(arcBots[last], tS[last], aC[last], true);
+
+                // Pieza de inicio (desde poleE)
+                if (endOnEdge) {
+                    // Retrace inverso de endEdge. needArcV: si hay más arcos o el
+                    // inicio está en arista (necesita llegar a tS[startArc]).
+                    bezierSecondHalf(c, endECPsRev, 1 - endT, 0);
+                    const needArcV = arcSeq.length > 1 || startOnEdge;
+                    if (needArcV) arcVertex(endArc, true);
+                } else {
+                    halfArc(arcBots[last], tS[last], aC[last], true);
+                }
+
+                // Cadena inversa
                 for (let k = arcSeq.length - 1; k >= 1; k--) {
                     edge(arcSeq[k - 1], arcSeq[k], true);
-                    if (arcSeq[k - 1] === startIdx) break;
+                    if (arcSeq[k - 1] === startArc) break;
                     arcVertex(arcSeq[k - 1], true);
                 }
-                halfArc(tE[startIdx], arcTops[startIdx], aC[startIdx], true);
+
+                // Pieza de fin (hacia poleS)
+                if (startOnEdge) {
+                    // Si arcSeq.length===1 el cursor ya está en tS[startArc]
+                    // (de halfArc o del arcVertex del inicio); no repetir arcVertex.
+                    if (arcSeq.length > 1) arcVertex(startArc, true);
+                    bezierFirstHalf(c, startECPsRev, 1 - startT, 0);
+                } else {
+                    halfArc(tE[startArc], arcTops[startArc], aC[startArc], true);
+                }
             }
 
             c.closePath();
-            c.fillStyle = window.edgeC;
+            c.fillStyle = edgeC;
             c.fill();
-            c.strokeStyle = '#FF3366';
-            c.lineWidth = 2.0;
-            c.stroke();
+            if (!shadowMode) {
+                c.strokeStyle = '#FF3366';
+                c.lineWidth = 2.0;
+                c.stroke();
+            }
 
             return {pA: poleS, pC: poleE};
+        }
+
+        // ╭──────────────────────────────────────────────────────────────────╮
+        // │ 6e. Punto de apoyo: máximo Y proyectado de la figura             │
+        // ╰──────────────────────────────────────────────────────────────────╯
+        //
+        // La figura es una "moneda poligonal": dos caras planas + N segmentos
+        // de canto + N esquinas de canto (arcos). Según la orientación, apoya
+        // en un vértice, una arista o una cara del conjunto.
+        //
+        // computeSupportY devuelve el Y-pantalla máximo de esa zona de apoyo,
+        // que es el anclaje desde el cual se proyecta la sombra.
+        //
+        // Lógica de proyección:
+        //   axisH=false → fm comprime X, Y no varía → pVY(y) = y.
+        //     • El canto se extiende en X, no contribuye a Y.
+        //   axisH=true  → fm comprime Y → pVY(y) = cy + sc·(y−cy).
+        //     • El canto (ns=1, sc≥0) cuelga rimW hacia abajo.
+        //
+        // Para los beziers de arista (curveFrac≠0), se construyen los puntos de
+        // control en el espacio Y proyectado y se buscan los extremos con la
+        // fórmula analítica de dBy/dt = 0.  Esto corrige el bug que ignoraba
+        // aristas convexas cuyo fondo supera el de cualquier arco de esquina.
+
+        // Evalúa solo la coordenada Y de un bezier cúbico.
+        function bezierEvalY(P, t) {
+            const mt = 1 - t;
+            return mt * mt * mt * P[0][1] + 3 * mt * mt * t * P[1][1] + 3 * mt * t * t * P[2][1] + t * t * t * P[3][1];
+        }
+
+        // Devuelve los t ∈ (0,1) donde dBy/dt = 0 (extremos verticales del bezier).
+        function bezierYExtrTs(P) {
+            const a = P[1][1] - P[0][1];
+            const b = P[2][1] - P[1][1];
+            const cv = P[3][1] - P[2][1];
+            const A = a - 2 * b + cv, B2 = b - a, C = a;
+            const res = [];
+            if (Math.abs(A) < 1e-9) {
+                if (Math.abs(B2) > 1e-9) {
+                    const t = -C / (2 * B2);
+                    if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
+                }
+            } else {
+                const disc = B2 * B2 - A * C;
+                if (disc >= 0) {
+                    const sq = Math.sqrt(disc);
+                    for (const s of [-1, 1]) {
+                        const t = (-B2 + s * sq) / A;
+                        if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
+                    }
+                }
+            }
+            return res;
+        }
+
+        // Retorna el feature de apoyo: { y, xMin, xMax }.
+        //
+        //   y            = Y-pantalla máximo (nivel del suelo, ancla de la sombra).
+        //   xMin, xMax   = extensión horizontal del contacto en el sistema de coords
+        //                  de dibujo (después del shift pero antes de fm).
+        //
+        // Candidatos evaluados para cada vértice:
+        //   • endpoints tS[i] / tE[i] del arco de esquina.
+        //   • extremo del arco en la dirección de máximo pVY (si cae en el span).
+        //   • extremos verticales de la arista bezier (raíces de dBy/dt = 0).
+        //
+        // El X proyectado:
+        //   axisH=false → pVX(x) = cx + sc·(x−cx)   (mismo factor que fm en X)
+        //   axisH=true  → pVX(x) = x                 (fm no toca X)
+        function computeSupportFeature(V, r, Re, ca, cx, cy, sc, axisH, rimW, ns, hasE) {
+            const pVY = y => axisH ? cy + sc * (y - cy) : y;
+            const pTY = ty => axisH ? sc * ty : ty;
+            const pVX = x => axisH ? x : cx + (x - cx) * sc;
+            const pTX = tx => axisH ? tx : tx * sc;
+
+            const {tS, tE, aC} = computeTang(V, r, Re, ca);
+            const n = V.length;
+            const aS_arr = tS.map((ts, i) => Math.atan2(ts[1] - aC[i][1], ts[0] - aC[i][0]));
+            const aE_arr = tE.map((te, i) => Math.atan2(te[1] - aC[i][1], te[0] - aC[i][0]));
+            const tgt = (axisH && sc < 0) ? -PI / 2 : PI / 2;
+
+            // Recolectamos todos los candidatos (px, py) en espacio proyectado.
+            const pts = [];
+
+            for (let i = 0; i < n; i++) {
+                pts.push([pVX(tS[i][0]), pVY(tS[i][1])]);
+                pts.push([pVX(tE[i][0]), pVY(tE[i][1])]);
+
+                // Extremo del arco en la dirección de máximo pVY.
+                let span = aE_arr[i] - aS_arr[i];
+                if (span < 0) span += 2 * PI;
+                let off = tgt - aS_arr[i];
+                if (off < 0) off += 2 * PI;
+                if (off <= span + 1e-6)
+                    pts.push([pVX(aC[i][0] + r * Math.cos(tgt)),
+                        pVY(aC[i][1] + r * Math.sin(tgt))]);
+
+                // Arista bezier i: tE[i] → tS[siguiente].
+                const nx = (i + 1) % n;
+                const fr = tE[i], to_p = tS[nx];
+                const h = dist(fr, to_p) / 3;
+                const tf = tanAt(fr, aC[i]);
+                const tt = tanAt(to_p, aC[nx]);
+
+                const P0x = pVX(fr[0]), P3x = pVX(to_p[0]);
+                const P1x = P0x + h * pTX(tf[0]), P2x = P3x - h * pTX(tt[0]);
+                const P0y = pVY(fr[1]), P3y = pVY(to_p[1]);
+                const P1y = P0y + h * pTY(tf[1]), P2y = P3y - h * pTY(tt[1]);
+                const PY = [[0, P0y], [0, P1y], [0, P2y], [0, P3y]];
+
+                pts.push([P0x, P0y], [P3x, P3y]);
+                for (const t of bezierYExtrTs(PY)) {
+                    const mt = 1 - t;
+                    const xv = mt * mt * mt * P0x + 3 * mt * mt * t * P1x + 3 * mt * t * t * P2x + t * t * t * P3x;
+                    pts.push([xv, bezierEvalY(PY, t)]);
+                }
+            }
+
+            // faceBottom = máximo pVY entre todos los candidatos.
+            const faceBottom = pts.reduce((m, p) => Math.max(m, p[1]), -Infinity);
+            const cantoAdd = hasE && axisH && ns > 0 ? rimW : 0;
+            const y = faceBottom + cantoAdd;
+
+            // xMin / xMax: extensión X del contacto.
+            //
+            // Caso base: puntos dentro de eps_y del faceBottom (contacto de la cara).
+            // Caso canto (axisH=true, ns=1): la cara inferior del canto abarca toda la
+            // anchura horizontal de la figura → expandimos con todos los pts.
+            // Esto es correcto porque pVX=x (sin compresión) y el perfil de la cara
+            // a cualquier altura tiene la misma anchura en pantalla.
+            const eps_y = 1.0;
+            let xMin = Infinity, xMax = -Infinity;
+            for (const [px, py] of pts) {
+                if (Math.abs(py - faceBottom) <= eps_y) {
+                    xMin = Math.min(xMin, px);
+                    xMax = Math.max(xMax, px);
+                }
+            }
+            if (cantoAdd > 0) {
+                // Canto extiende en Y → el contacto abarca todo el ancho de la figura.
+                for (const [px] of pts) {
+                    xMin = Math.min(xMin, px);
+                    xMax = Math.max(xMax, px);
+                }
+            }
+            if (!isFinite(xMin)) {
+                xMin = xMax = cx;
+            }
+
+            // Tipo de apoyo:
+            //   'face'   → figura casi plana (|sc| ≈ 1), toda la cara en contacto.
+            //   'edge'   → una arista o la cara de un canto en contacto (extent X notable).
+            //   'vertex' → un único punto de contacto.
+            const isFlatFacing = Math.abs(sc) > 0.98;
+            const type = isFlatFacing ? 'face'
+                : xMax - xMin > 1.5 ? 'edge'
+                    : 'vertex';
+
+            return {y, xMin, xMax, type};
         }
 
         // ╭──────────────────────────────────────────────────────────────────╮
@@ -868,17 +1248,120 @@
 
             // Colores dependientes del tema.
             const dk = window.matchMedia('(prefers-color-scheme:dark)').matches;
-            const edgeC = dk ? '#534AB7' : '#3C3489';
-            const faceC = sc >= 0
-                ? 'rgba(127, 119, 221, 0.5)'
-                : (dk ? 'rgba(83,74,183,0.35)' : 'rgba(175,169,236,0.45)');
-            window.edgeC = edgeC;  // leído por drawCantoPoly al rellenar
+
+            // ─── Modelo de iluminación Lambert (activo cuando la sombra está visible) ──
+            //
+            // Sistema de coordenadas 3D de pantalla: X=derecha, Y=abajo, Z=hacia viewer.
+            // El vector "hacia la luz" (lx, ly, lz) se obtiene invirtiendo la dirección
+            // en que cae la sombra (kx, ky) y completando con el seno de la elevación.
+            //
+            // Normales:
+            //   Cara    → [0, 0, 1]          (siempre apunta al viewer)
+            //   Canto   → [sc·ns, 0, sinA]   para axisH=false  (giro en Y)
+            //           → [0, sc·ns, sinA]   para axisH=true   (giro en X)
+            //
+            // Cuando la sombra está desactivada los factores son 1 y los colores son
+            // exactamente los valores originales.
+            const AMBIENT = 0.35;
+            let faceIllum = 1.0, cantoIllum = 1.0;
+            if (S.showShadow) {
+                const elR = S.shadowElev * PI / 180;
+                const dirR = S.shadowDir * PI / 180;
+                const lx = -Math.cos(dirR) * Math.cos(elR);
+                const ly = -Math.sin(dirR) * Math.cos(elR);
+                const lz = Math.sin(elR);
+                // Cara: dot([0,0,1], luz) = lz = sin(el).
+                faceIllum = Math.max(AMBIENT, lz);
+                // Canto: dot(normal_canto, luz).
+                const cnDot = S.axisH
+                    ? sc * ns * ly + sinA * lz
+                    : sc * ns * lx + sinA * lz;
+                cantoIllum = Math.max(AMBIENT, cnDot);
+            }
+
+            // Canto: color base × cantoIllum. Cuando illum=1 coincide con los hex originales.
+            //   '#534AB7' = rgb(83,74,183)   '#3C3489' = rgb(60,52,137)
+            const edgeBase = dk ? [83, 74, 183] : [60, 52, 137];
+            const edgeC = `rgb(${Math.round(edgeBase[0] * cantoIllum)},` +
+                `${Math.round(edgeBase[1] * cantoIllum)},` +
+                `${Math.round(edgeBase[2] * cantoIllum)})`;
+
+            // Cara: rgb × faceIllum, alpha fija. Cuando illum=1 coincide con los rgba originales.
+            const [fR, fG, fB] = sc >= 0 ? [127, 119, 221] : (dk ? [83, 74, 183] : [175, 169, 236]);
+            const fA = sc >= 0 ? 0.5 : (dk ? 0.35 : 0.45);
+            const faceC = `rgba(${Math.round(fR * faceIllum)},` +
+                `${Math.round(fG * faceIllum)},` +
+                `${Math.round(fB * faceIllum)},${fA})`;
 
             // Centramos el conjunto cara+canto aplicando un shift global opuesto al canto.
             const shift = hasE ? ns * rimW / 2 : 0;
             ctx.save();
             if (S.axisH) ctx.translate(0, -shift);
             else ctx.translate(-shift, 0);
+
+            // Feature de apoyo: calculado una sola vez; usado por sombra e indicador.
+            // Círculo: contacto en x=cx → xMin=xMax=cx.
+            // Polígono: computeSupportFeature rastrea también el extent X.
+            const support = isC ? (() => {
+                    const cantoBelowY = hasE && S.axisH && ns > 0;
+                    const sy = (S.axisH ? cy + Math.abs(sc) * Re : cy + Re) + (cantoBelowY ? rimW : 0);
+                    // Canto hacia abajo (axisH=true, ns=1): toda la cara circular en contacto.
+                    // Sin canto, o canto lateral (axisH=false): un solo punto en x=cx.
+                    const sxMin = cantoBelowY ? cx - Re : cx;
+                    const sxMax = cantoBelowY ? cx + Re : cx;
+                    const isFlatC = Math.abs(sc) > 0.98;
+                    const stype = isFlatC ? 'face'
+                        : sxMax - sxMin > 1.5 ? 'edge'
+                            : 'vertex';
+                    return {y: sy, xMin: sxMin, xMax: sxMax, type: stype};
+                })()
+                : computeSupportFeature(V, r, Re, ca, cx, cy, sc, S.axisH, rimW, ns, hasE);
+
+            // ─── Sombra ─────────────────────────────────────────────────────
+            if (S.showShadow) {
+                const el = S.shadowElev * PI / 180;
+                const dir = S.shadowDir * PI / 180;
+                const k = Math.cos(el) / Math.sin(el);
+                const kx = k * Math.cos(dir);
+                const ky = k * Math.sin(dir);
+                const shadowFill = `rgba(0,0,0,${dk ? 0.45 : 0.18})`;
+
+                const poleEy = support.y;
+
+                ctx.save();
+                ctx.transform(1, 0, -kx, 1 - ky, poleEy * kx, poleEy * ky);
+
+                // Cara (mismos cálculos que el render normal)
+                ctx.save();
+                ctx.transform(...fm);
+                ctx.beginPath();
+                if (isC) ctx.arc(cx, cy, Re, 0, 2 * PI);
+                else drawShape(ctx, V, r, Re, ca);
+                ctx.fillStyle = shadowFill;
+                ctx.fill();
+                ctx.restore();
+
+                // Canto (mismos cálculos que el render normal)
+                if (hasE) {
+                    if (isC) {
+                        drawCircleCanto(ctx, cx, cy, Re, rimW, sc, ns, S.axisH);
+                        ctx.fillStyle = shadowFill;
+                        ctx.fill();
+                    } else {
+                        ctx.save();
+                        if (S.axisH) {
+                            ctx.translate(cx, cy);
+                            ctx.rotate(PI / 2);
+                            ctx.translate(-cx, -cy);
+                        }
+                        ctx.beginPath();
+                        drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy, shadowFill, true);
+                        ctx.restore();
+                    }
+                }
+
+                ctx.restore();
+            }
 
             // ─── Canto ─────────────────────────────────────────────────────
             if (hasE) {
@@ -898,7 +1381,7 @@
                         ctx.translate(-cx, -cy);
                     }
                     ctx.beginPath();
-                    const poles = drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy);
+                    const poles = drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy, edgeC);
                     ctx.restore();
 
                     // Marcadores de polos (opcionales).
@@ -927,68 +1410,95 @@
             ctx.lineWidth = 2.2;
             ctx.stroke();
 
-            // ─── Círculos de construcción (opcionales) ──────────────────────
-            // Cada esquina del polígono está gobernada por un círculo de radio r
-            // centrado en aC[i]. Proyectados por ctx.transform(...fm) aparecen
-            // como elipses que muestran el mecanismo de generación de la forma.
-            if (!isC && S.showCircles) {
+            // ─── Círculos de construcción y marcadores tS/tE (opcionales) ───
+            // computeTang se llama una sola vez si alguna de las opciones está activa.
+            // showCircles se dibuja dentro del scope fm (las elipses requieren la transformación);
+            // los marcadores tS/tE usan proyección manual y se dibujan fuera de ese scope.
+            if (!isC && (S.showCircles || S.showTS || S.showTE)) {
                 const {tS, tE, aC} = computeTang(V, r, Re, ca);
-                const dk = window.matchMedia('(prefers-color-scheme:dark)').matches;
-                const circleColor = dk ? '#9E86FF' : '#6A52E0';
-                ctx.setLineDash([5, 4]);
-                ctx.lineWidth = 1.2;
-                ctx.strokeStyle = circleColor;
-                for (const c of aC) {
-                    ctx.beginPath();
-                    ctx.arc(c[0], c[1], r, 0, 2 * PI);
-                    ctx.stroke();
-                }
-                // Radios tS y tE de cada esquina.
-                ctx.lineWidth = 0.8;
-                ctx.setLineDash([2, 4]);
-                for (let i = 0; i < V.length; i++) {
-                    ctx.beginPath();
-                    ctx.moveTo(aC[i][0], aC[i][1]);
-                    ctx.lineTo(tS[i][0], tS[i][1]);
-                    ctx.moveTo(aC[i][0], aC[i][1]);
-                    ctx.lineTo(tE[i][0], tE[i][1]);
-                    ctx.stroke();
-                }
-                ctx.setLineDash([]);
-                // Centros aC[i].
-                for (const c of aC) {
-                    ctx.beginPath();
-                    ctx.arc(c[0], c[1], 3, 0, 2 * PI);
-                    ctx.fillStyle = circleColor;
-                    ctx.fill();
-                    // Cruz pequeña
+
+                if (S.showCircles) {
+                    const circleColor = dk ? '#9E86FF' : '#6A52E0';
+                    ctx.setLineDash([5, 4]);
+                    ctx.lineWidth = 1.2;
                     ctx.strokeStyle = circleColor;
-                    ctx.lineWidth = 1;
+                    for (const c of aC) {
+                        ctx.beginPath();
+                        ctx.arc(c[0], c[1], r, 0, 2 * PI);
+                        ctx.stroke();
+                    }
+                    // Radios tS y tE de cada esquina.
+                    ctx.lineWidth = 0.8;
+                    ctx.setLineDash([2, 4]);
+                    for (let i = 0; i < V.length; i++) {
+                        ctx.beginPath();
+                        ctx.moveTo(aC[i][0], aC[i][1]);
+                        ctx.lineTo(tS[i][0], tS[i][1]);
+                        ctx.moveTo(aC[i][0], aC[i][1]);
+                        ctx.lineTo(tE[i][0], tE[i][1]);
+                        ctx.stroke();
+                    }
+                    ctx.setLineDash([]);
+                    // Centros aC[i] con cruz.
+                    for (const c of aC) {
+                        ctx.beginPath();
+                        ctx.arc(c[0], c[1], 3, 0, 2 * PI);
+                        ctx.fillStyle = circleColor;
+                        ctx.fill();
+                        ctx.strokeStyle = circleColor;
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(c[0] - 5, c[1]);
+                        ctx.lineTo(c[0] + 5, c[1]);
+                        ctx.moveTo(c[0], c[1] - 5);
+                        ctx.lineTo(c[0], c[1] + 5);
+                        ctx.stroke();
+                    }
+                }
+
+                ctx.restore(); // ← sale del scope fm (shift externo sigue activo)
+
+                if (S.showTS || S.showTE) {
+                    // Proyección dependiente del eje (eje horizontal comprime en Y).
+                    const pj = p => S.axisH ? [p[0], cy + (p[1] - cy) * sc]
+                        : [cx + (p[0] - cx) * sc, p[1]];
+                    const drawMarkers = (pts, color) => pts.forEach(t => {
+                        const [px, py] = pj(t);
+                        drawDot(ctx, px, py, 4, color);
+                    });
+                    if (S.showTS) drawMarkers(tS, '#0F6E56');
+                    if (S.showTE) drawMarkers(tE, '#854F0B');
+                }
+            } else {
+                ctx.restore(); // ← sale del scope fm cuando no hay marcadores
+            }
+
+            // ─── Indicador de zona de apoyo (opcional) ─────────────────────
+            // Estilos por tipo de apoyo:
+            //   vertex → punto naranja (único punto de contacto)
+            //   edge   → segmento naranja sólido + puntos en extremos
+            //   face   → segmento azul + puntos (cara entera en el suelo)
+            if (S.showApoyo) {
+                const sy = support.y;
+                const stype = support.type;
+                const apoC = stype === 'face' ? '#6366F1' : '#FF9500';
+
+                ctx.setLineDash([]);
+                if (stype === 'vertex') {
+                    drawDot(ctx, (support.xMin + support.xMax) / 2, sy, 5, apoC);
+                } else {
+                    ctx.strokeStyle = apoC;
+                    ctx.lineWidth = stype === 'face' ? 3 : 2.5;
                     ctx.beginPath();
-                    ctx.moveTo(c[0] - 5, c[1]);
-                    ctx.lineTo(c[0] + 5, c[1]);
-                    ctx.moveTo(c[0], c[1] - 5);
-                    ctx.lineTo(c[0], c[1] + 5);
+                    ctx.moveTo(support.xMin, sy);
+                    ctx.lineTo(support.xMax, sy);
                     ctx.stroke();
+                    drawDot(ctx, support.xMin, sy, 4, apoC);
+                    drawDot(ctx, support.xMax, sy, 4, apoC);
                 }
             }
-            ctx.restore();
 
-            // ─── Marcadores tS / tE (opcionales) ───────────────────────────
-            if (!isC && (S.showTS || S.showTE)) {
-                const {tS, tE} = computeTang(V, r, Re, ca);
-                // Proyección dependiente del eje (eje horizontal comprime en Y).
-                const pj = p => S.axisH ? [p[0], cy + (p[1] - cy) * sc]
-                    : [cx + (p[0] - cx) * sc, p[1]];
-                const drawMarkers = (pts, color) => pts.forEach(t => {
-                    const [px, py] = pj(t);
-                    drawDot(ctx, px, py, 4, color);
-                });
-                if (S.showTS) drawMarkers(tS, '#0F6E56');
-                if (S.showTE) drawMarkers(tE, '#854F0B');
-            }
-
-            ctx.restore();
+            ctx.restore(); // ← sale del scope del shift global
         }
 
         // ╭──────────────────────────────────────────────────────────────────╮
@@ -1015,6 +1525,8 @@
             {id: 'sCurve', pId: 'pCurve', vId: 'vCurve', set: v => S.curveFrac = v / 100, fmt: v => v},
             {id: 'sRim', pId: 'pRim', vId: 'vRim', set: v => S.rimFrac = v / 100, fmt: v => v + '%'},
             {id: 'sRot', pId: 'pRot', vId: 'vRot', set: v => S.rotDeg = +v, fmt: v => v + '°'},
+            {id: 'sShdDir', pId: 'pShdDir', vId: 'vShdDir', set: v => S.shadowDir = +v, fmt: v => v + '°'},
+            {id: 'sShdEl', pId: 'pShdEl', vId: 'vShdEl', set: v => S.shadowElev = +v, fmt: v => v + '°'},
         ];
 
         // ╭──────────────────────────────────────────────────────────────────╮
@@ -1172,6 +1684,15 @@
 
         bindRadioChips(['cV', 'cH'], i => {
             S.axisH = (i === 1);
+        });
+        bindToggleChip('cShadow', on => {
+            S.showShadow = on;
+            document.querySelectorAll('.shadow-row').forEach(el => el.style.display = on ? '' : 'none');
+            draw();
+        });
+        bindToggleChip('cApoyo', on => {
+            S.showApoyo = on;
+            draw();
         });
         bindToggleChip('cTS', on => S.showTS = on);
         bindToggleChip('cTE', on => S.showTE = on);
