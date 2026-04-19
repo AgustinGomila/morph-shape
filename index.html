@@ -298,6 +298,18 @@
             <button class="play-btn" id="pAngle" title="Animar">▶</button>
         </div>
         <div class="row">
+            <label>Rotación forma</label>
+            <input type="range" id="sRot" min="0" max="360" value="270" step="1">
+            <span class="v" id="vRot">270°</span>
+            <button class="play-btn" id="pRot" title="Animar">▶</button>
+        </div>
+        <div class="row">
+            <label>Orientación eje</label>
+            <input type="range" id="sAxis" min="0" max="360" value="90" step="1">
+            <span class="v" id="vAxis">90°</span>
+            <button class="play-btn" id="pAxis" title="Animar">&#9654;</button>
+        </div>
+        <div class="row">
             <label>Lados</label>
             <input type="range" id="sN" min="1" max="12" value="5" step="1">
             <span class="v" id="vN">5</span>
@@ -321,12 +333,6 @@
             <span class="v" id="vRim">22%</span>
             <button class="play-btn" id="pRim" title="Animar">▶</button>
         </div>
-        <div class="row">
-            <label>Rotación forma</label>
-            <input type="range" id="sRot" min="0" max="360" value="270" step="1">
-            <span class="v" id="vRot">270°</span>
-            <button class="play-btn" id="pRot" title="Animar">▶</button>
-        </div>
         <div class="row shadow-row" style="display:none">
             <label>Luz dirección</label>
             <input type="range" id="sShdDir" min="0" max="360" value="135" step="1">
@@ -339,12 +345,7 @@
             <span class="v" id="vShdEl">90°</span>
             <button class="play-btn" id="pShdEl" title="Animar">▶</button>
         </div>
-
         <div class="chip-group">
-            <span class="chip-label">Eje</span>
-            <span class="ch on" id="cV">Vertical</span>
-            <span class="ch" id="cH">Horizontal</span>
-            <div class="divider"></div>
             <span class="ch" id="cShadow"><span class="dot" style="background:#64748b"></span>sombra</span>
             <span class="ch" id="cApoyo"><span class="dot" style="background:#FF9500"></span>apoyo</span>
             <div class="divider"></div>
@@ -372,7 +373,7 @@
             curveFrac: 0,     // curvatura de arista (−1..1); >0 convexa, <0 cóncava
             rimFrac: 0.22,    // grosor del canto / Re
             rotDeg: 270,      // rotación de la forma en el plano (°)
-            axisH: false,     // eje de giro: false = vertical, true = horizontal
+            axisAngle: 90,    // orientación del eje de giro en el plano (0° = horizontal, 90° = vertical)
             showTS: false, showTE: false, showPole: false, showCircles: false, // marcadores opcionales
             showShadow: false, shadowDir: 135, shadowElev: 90, // sombra proyectada
             showApoyo: false, // indicador de zona de apoyo
@@ -399,6 +400,42 @@
             const rx = T[0] - C[0], ry = T[1] - C[1];
             const l = Math.max(Math.hypot(rx, ry), 1e-6);
             return [-ry / l, rx / l];
+        }
+
+
+        // Interpolación lineal entre dos puntos 2D.
+        function lerp2(A, B, t) {
+            return [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1])];
+        }
+
+        // Evalúa el bezier cúbico P=[p0,p1,p2,p3] (cada pi=[x,y]) en t ∈ [0,1].
+        function evalBez2(P, t) {
+            const mt = 1 - t;
+            return [mt * mt * mt * P[0][0] + 3 * mt * mt * t * P[1][0] + 3 * mt * t * t * P[2][0] + t * t * t * P[3][0],
+                mt * mt * mt * P[0][1] + 3 * mt * mt * t * P[1][1] + 3 * mt * t * t * P[2][1] + t * t * t * P[3][1]];
+        }
+
+        // t ∈ (0,1) donde dBy/dt = 0 (extremos verticales del bezier cúbico).
+        function bezierYExtrs(y0, y1, y2, y3) {
+            const a = y1 - y0, b = y2 - y1, c = y3 - y2;
+            const A = a - 2 * b + c, B2 = b - a, C = a;
+            const res = [];
+            if (Math.abs(A) < 1e-9) {
+                if (Math.abs(B2) > 1e-9) {
+                    const t = -C / (2 * B2);
+                    if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
+                }
+            } else {
+                const disc = B2 * B2 - A * C;
+                if (disc >= 0) {
+                    const sq = Math.sqrt(disc);
+                    for (const s of [-1, 1]) {
+                        const t = (-B2 + s * sq) / A;
+                        if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
+                    }
+                }
+            }
+            return res;
         }
 
         // ╭──────────────────────────────────────────────────────────────────╮
@@ -562,7 +599,6 @@
         // ╰──────────────────────────────────────────────────────────────────╯
 
         // Círculo relleno con borde (marcadores tS/tE/polos).
-        // Consolida tres bloques repetidos en el código anterior.
         function drawDot(c, x, y, radius, fill, stroke = 'white', lw = 1) {
             c.beginPath();
             c.arc(x, y, radius, 0, 2 * PI);
@@ -703,36 +739,22 @@
         // │ 6. Canto lateral (perfil 2.5D)                                   │
         // ╰──────────────────────────────────────────────────────────────────╯
 
-        // Canto de un círculo: dos semicírculos unidos por un rectángulo.
-        // Ambas ramas (eje vertical/horizontal) son simétricas; se diferencian
-        // sólo en qué coordenada lleva el offset del canto.
-        function drawCircleCanto(c, cx, cy, Re, rimW, sc, ns, axisH) {
+        // Canto de un círculo: media-elipse frontal + rectángulo lateral.
+        // Invocada con el canvas ya rotado para alinear el eje con la vertical.
+        function drawCircleCanto(c, cx, cy, Re, rimW, sc, ns) {
             const k = 4 / 3, rd = ns * rimW;
+            const ctX = cx + sc * Re * k;
             c.beginPath();
-            if (!axisH) {
-                // Eje vertical: cara frontal comprimida en X; canto se extiende en +X.
-                const ctX = cx + sc * Re * k;
-                c.moveTo(cx, cy - Re);
-                c.bezierCurveTo(ctX, cy - Re, ctX, cy + Re, cx, cy + Re);
-                c.lineTo(cx + rd, cy + Re);
-                c.bezierCurveTo(ctX + rd, cy + Re, ctX + rd, cy - Re, cx + rd, cy - Re);
-            } else {
-                // Eje horizontal: simétrico al anterior, rotado 90°.
-                const ctY = cy + sc * Re * k;
-                c.moveTo(cx - Re, cy);
-                c.bezierCurveTo(cx - Re, ctY, cx + Re, ctY, cx + Re, cy);
-                c.lineTo(cx + Re, cy + rd);
-                c.bezierCurveTo(cx + Re, ctY + rd, cx - Re, ctY + rd, cx - Re, cy + rd);
-            }
+            c.moveTo(cx, cy - Re);
+            c.bezierCurveTo(ctX, cy - Re, ctX, cy + Re, cx, cy + Re);
+            c.lineTo(cx + rd, cy + Re);
+            c.bezierCurveTo(ctX + rd, cy + Re, ctX + rd, cy - Re, cx + rd, cy - Re);
             c.closePath();
         }
 
         // Canto de un polígono con esquinas.
-        //
-        // Nota: drawCantoPoly se invoca con el canvas ya rotado 90° cuando
-        // axisH=true (ver draw()), de modo que aquí todo se computa como si
-        // el eje de giro fuera siempre vertical. Eso simplifica las proyecciones:
-        // sólo se comprime en X por el factor sc (coseno del ángulo de giro).
+        // El canvas llega pre-rotado por ctxRotAround para que el eje de giro
+        // quede siempre vertical; la proyección sólo comprime en X por sc.
         function drawCantoPoly(c, Veff, r, Re, ca, sc, rimW, ns, cx, cy, edgeC, shadowMode = false) {
             const n = Veff.length;
             const rE = clampedR(Veff, r);
@@ -808,16 +830,8 @@
             // ────────────────────────────────────────────────────────────────
             // 6.b.  Helpers para polo en arista convexa (De Casteljau)
             // ────────────────────────────────────────────────────────────────
-            //
-            // Con ca > 0 (aristas convexas), el bezier de una arista puede
-            // superar verticalmente el extremo de cualquier arco de esquina.
-            // Se calculan los extremos verticales de cada arista proyectada
-            // resolviendo B'y(t) = 0 (cuadrática analítica), y se usan De
-            // Casteljau para dividir el bezier exactamente en el polo.
-
-            function lerp2(A, B, t) {
-                return [A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1])];
-            }
+            // Con ca > 0 las aristas bezier pueden superar verticalmente los arcos
+            // de esquina. Se localizan con bezierYExtrs y se divide con De Casteljau.
 
             // Puntos de control de arista i (tE[i]→tS[next]) en espacio proyectado.
             function edgeCPs(i) {
@@ -831,38 +845,6 @@
                     [P0[0] + h * tf[0], P0[1] + h * tf[1]],
                     [P3[0] - h * tt[0], P3[1] - h * tt[1]],
                     P3];
-            }
-
-            // Evalúa el bezier cúbico P = [P0,P1,P2,P3] en t.
-            function bezierEval(P, t) {
-                const mt = 1 - t;
-                return [mt * mt * mt * P[0][0] + 3 * mt * mt * t * P[1][0] + 3 * mt * t * t * P[2][0] + t * t * t * P[3][0],
-                    mt * mt * mt * P[0][1] + 3 * mt * mt * t * P[1][1] + 3 * mt * t * t * P[2][1] + t * t * t * P[3][1]];
-            }
-
-            // t ∈ (0,1) donde dBy/dt = 0  (extremos verticales de la arista).
-            function bezierYExtrT(P) {
-                const a = P[1][1] - P[0][1];
-                const b = P[2][1] - P[1][1];
-                const cv = P[3][1] - P[2][1];
-                const A = a - 2 * b + cv, B2 = b - a, C = a;
-                const res = [];
-                if (Math.abs(A) < 1e-9) {
-                    if (Math.abs(B2) > 1e-9) {
-                        const t = -C / (2 * B2);
-                        if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
-                    }
-                } else {
-                    const disc = B2 * B2 - A * C;
-                    if (disc >= 0) {
-                        const sq = Math.sqrt(disc);
-                        for (const s of [-1, 1]) {
-                            const t = (-B2 + s * sq) / A;
-                            if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
-                        }
-                    }
-                }
-                return res;
             }
 
             // De Casteljau — 2ª mitad: de B(t) a P[3].
@@ -909,8 +891,8 @@
                 const cps = edgeCPs(i);
                 const epYMin = Math.min(cps[0][1], cps[3][1]);
                 const epYMax = Math.max(cps[0][1], cps[3][1]);
-                for (const t of bezierYExtrT(cps)) {
-                    const pt = bezierEval(cps, t);
+                for (const t of bezierYExtrs(cps[0][1], cps[1][1], cps[2][1], cps[3][1])) {
+                    const pt = evalBez2(cps, t);
                     if (pt[1] < epYMin - 0.5 || pt[1] > epYMax + 0.5) {
                         candidates.push({type: 'edge', edgeIdx: i, t, pt});
                     }
@@ -1059,55 +1041,9 @@
         // ╭──────────────────────────────────────────────────────────────────╮
         // │ 6e. Punto de apoyo: máximo Y proyectado de la figura             │
         // ╰──────────────────────────────────────────────────────────────────╯
-        //
-        // La figura es una "moneda poligonal": dos caras planas + N segmentos
-        // de canto + N esquinas de canto (arcos). Según la orientación, apoya
-        // en un vértice, una arista o una cara del conjunto.
-        //
-        // computeSupportY devuelve el Y-pantalla máximo de esa zona de apoyo,
-        // que es el anclaje desde el cual se proyecta la sombra.
-        //
-        // Lógica de proyección:
-        //   axisH=false → fm comprime X, Y no varía → pVY(y) = y.
-        //     • El canto se extiende en X, no contribuye a Y.
-        //   axisH=true  → fm comprime Y → pVY(y) = cy + sc·(y−cy).
-        //     • El canto (ns=1, sc≥0) cuelga rimW hacia abajo.
-        //
-        // Para los beziers de arista (curveFrac≠0), se construyen los puntos de
-        // control en el espacio Y proyectado y se buscan los extremos con la
-        // fórmula analítica de dBy/dt = 0.  Esto corrige el bug que ignoraba
-        // aristas convexas cuyo fondo supera el de cualquier arco de esquina.
-
-        // Evalúa solo la coordenada Y de un bezier cúbico.
-        function bezierEvalY(P, t) {
-            const mt = 1 - t;
-            return mt * mt * mt * P[0][1] + 3 * mt * mt * t * P[1][1] + 3 * mt * t * t * P[2][1] + t * t * t * P[3][1];
-        }
-
-        // Devuelve los t ∈ (0,1) donde dBy/dt = 0 (extremos verticales del bezier).
-        function bezierYExtrTs(P) {
-            const a = P[1][1] - P[0][1];
-            const b = P[2][1] - P[1][1];
-            const cv = P[3][1] - P[2][1];
-            const A = a - 2 * b + cv, B2 = b - a, C = a;
-            const res = [];
-            if (Math.abs(A) < 1e-9) {
-                if (Math.abs(B2) > 1e-9) {
-                    const t = -C / (2 * B2);
-                    if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
-                }
-            } else {
-                const disc = B2 * B2 - A * C;
-                if (disc >= 0) {
-                    const sq = Math.sqrt(disc);
-                    for (const s of [-1, 1]) {
-                        const t = (-B2 + s * sq) / A;
-                        if (t > 1e-6 && t < 1 - 1e-6) res.push(t);
-                    }
-                }
-            }
-            return res;
-        }
+        // Retorna { y, xMin, xMax, type } donde y = fondo de la figura proyectada
+        // (ancla de la sombra), xMin/xMax = extensión X del contacto con el suelo.
+        // Evalúa tS/tE, extremos de arcos y extremos verticales de aristas bezier.
 
         // Retorna el feature de apoyo: { y, xMin, xMax }.
         //
@@ -1123,33 +1059,42 @@
         // El X proyectado:
         //   axisH=false → pVX(x) = cx + sc·(x−cx)   (mismo factor que fm en X)
         //   axisH=true  → pVX(x) = x                 (fm no toca X)
-        function computeSupportFeature(V, r, Re, ca, cx, cy, sc, axisH, rimW, ns, hasE) {
-            const pVY = y => axisH ? cy + sc * (y - cy) : y;
-            const pTY = ty => axisH ? sc * ty : ty;
-            const pVX = x => axisH ? x : cx + (x - cx) * sc;
-            const pTX = tx => axisH ? tx : tx * sc;
+        function computeSupportFeature(V, r, Re, ca, cx, cy, sc, axR, rimW, ns, hasE) {
+            const cosAx = Math.cos(axR), sinAx = Math.sin(axR);
+            const fmA = cosAx * cosAx + sc * sinAx * sinAx;
+            const fmB = (1 - sc) * sinAx * cosAx;
+            const fmD = sinAx * sinAx + sc * cosAx * cosAx;
+            const pVX = (x, y) => cx + (x - cx) * fmA + (y - cy) * fmB;
+            const pVY = (x, y) => cy + (x - cx) * fmB + (y - cy) * fmD;
+            const pTX = (tx, ty) => tx * fmA + ty * fmB;
+            const pTY = (tx, ty) => tx * fmB + ty * fmD;
 
             const {tS, tE, aC} = computeTang(V, r, Re, ca);
             const n = V.length;
             const aS_arr = tS.map((ts, i) => Math.atan2(ts[1] - aC[i][1], ts[0] - aC[i][0]));
             const aE_arr = tE.map((te, i) => Math.atan2(te[1] - aC[i][1], te[0] - aC[i][0]));
-            const tgt = (axisH && sc < 0) ? -PI / 2 : PI / 2;
+            const tgt = Math.atan2(fmD, fmB);
 
             // Recolectamos todos los candidatos (px, py) en espacio proyectado.
             const pts = [];
 
             for (let i = 0; i < n; i++) {
-                pts.push([pVX(tS[i][0]), pVY(tS[i][1])]);
-                pts.push([pVX(tE[i][0]), pVY(tE[i][1])]);
+                pts.push([pVX(tS[i][0], tS[i][1]), pVY(tS[i][0], tS[i][1])]);
+                pts.push([pVX(tE[i][0], tE[i][1]), pVY(tE[i][0], tE[i][1])]);
 
-                // Extremo del arco en la dirección de máximo pVY.
-                let span = aE_arr[i] - aS_arr[i];
-                if (span < 0) span += 2 * PI;
-                let off = tgt - aS_arr[i];
-                if (off < 0) off += 2 * PI;
-                if (off <= span + 1e-6)
-                    pts.push([pVX(aC[i][0] + r * Math.cos(tgt)),
-                        pVY(aC[i][1] + r * Math.sin(tgt))]);
+                // Extremos del arco en dirección de máximo/mínimo pVY.
+                for (const t of [tgt, tgt + PI]) {
+                    const tNorm = ((t % (2 * PI)) + 2 * PI) % (2 * PI);
+                    let span = aE_arr[i] - aS_arr[i];
+                    if (span < 0) span += 2 * PI;
+                    let off = tNorm - aS_arr[i];
+                    if (off < 0) off += 2 * PI;
+                    if (off <= span + 1e-6) {
+                        const px = aC[i][0] + r * Math.cos(t);
+                        const py = aC[i][1] + r * Math.sin(t);
+                        pts.push([pVX(px, py), pVY(px, py)]);
+                    }
+                }
 
                 // Arista bezier i: tE[i] → tS[siguiente].
                 const nx = (i + 1) % n;
@@ -1158,32 +1103,27 @@
                 const tf = tanAt(fr, aC[i]);
                 const tt = tanAt(to_p, aC[nx]);
 
-                const P0x = pVX(fr[0]), P3x = pVX(to_p[0]);
-                const P1x = P0x + h * pTX(tf[0]), P2x = P3x - h * pTX(tt[0]);
-                const P0y = pVY(fr[1]), P3y = pVY(to_p[1]);
-                const P1y = P0y + h * pTY(tf[1]), P2y = P3y - h * pTY(tt[1]);
-                const PY = [[0, P0y], [0, P1y], [0, P2y], [0, P3y]];
-
+                const P0x = pVX(fr[0], fr[1]), P3x = pVX(to_p[0], to_p[1]);
+                const P0y = pVY(fr[0], fr[1]), P3y = pVY(to_p[0], to_p[1]);
+                const tfpx = pTX(tf[0], tf[1]), tfpy = pTY(tf[0], tf[1]);
+                const ttpx = pTX(tt[0], tt[1]), ttpy = pTY(tt[0], tt[1]);
+                const P1x = P0x + h * tfpx, P2x = P3x - h * ttpx;
+                const P1y = P0y + h * tfpy, P2y = P3y - h * ttpy;
                 pts.push([P0x, P0y], [P3x, P3y]);
-                for (const t of bezierYExtrTs(PY)) {
+                for (const t of bezierYExtrs(P0y, P1y, P2y, P3y)) {
                     const mt = 1 - t;
                     const xv = mt * mt * mt * P0x + 3 * mt * mt * t * P1x + 3 * mt * t * t * P2x + t * t * t * P3x;
-                    pts.push([xv, bezierEvalY(PY, t)]);
+                    const yv = mt * mt * mt * P0y + 3 * mt * mt * t * P1y + 3 * mt * t * t * P2y + t * t * t * P3y;
+                    pts.push([xv, yv]);
                 }
             }
 
             // faceBottom = máximo pVY entre todos los candidatos.
             const faceBottom = pts.reduce((m, p) => Math.max(m, p[1]), -Infinity);
-            const cantoAdd = hasE && axisH && ns > 0 ? rimW : 0;
-            const y = faceBottom + cantoAdd;
+            const cantoAddY = hasE ? Math.max(0, -ns * rimW * cosAx) : 0;
+            const cantoAddX = hasE && cantoAddY > 0 ? ns * rimW * sinAx : 0;
+            const y = faceBottom + cantoAddY;
 
-            // xMin / xMax: extensión X del contacto.
-            //
-            // Caso base: puntos dentro de eps_y del faceBottom (contacto de la cara).
-            // Caso canto (axisH=true, ns=1): la cara inferior del canto abarca toda la
-            // anchura horizontal de la figura → expandimos con todos los pts.
-            // Esto es correcto porque pVX=x (sin compresión) y el perfil de la cara
-            // a cualquier altura tiene la misma anchura en pantalla.
             const eps_y = 1.0;
             let xMin = Infinity, xMax = -Infinity;
             for (const [px, py] of pts) {
@@ -1192,12 +1132,13 @@
                     xMax = Math.max(xMax, px);
                 }
             }
-            if (cantoAdd > 0) {
-                // Canto extiende en Y → el contacto abarca todo el ancho de la figura.
+            if (cantoAddY > 0) {
                 for (const [px] of pts) {
                     xMin = Math.min(xMin, px);
                     xMax = Math.max(xMax, px);
                 }
+                xMin += Math.min(0, cantoAddX);
+                xMax += Math.max(0, cantoAddX);
             }
             if (!isFinite(xMin)) {
                 xMin = xMax = cx;
@@ -1219,6 +1160,17 @@
         // │ 7. Pintado principal                                             │
         // ╰──────────────────────────────────────────────────────────────────╯
 
+        // Rota el canvas alrededor de (cx, cy), ejecuta fn() y restaura el estado.
+        function ctxRotAround(c, angle, cx, cy, fn) {
+            c.save();
+            c.translate(cx, cy);
+            c.rotate(angle);
+            c.translate(-cx, -cy);
+            const ret = fn();
+            c.restore();
+            return ret;
+        }
+
         function draw() {
             // Tamaño físico del canvas con DPR correcto.
             const rect = cv.getBoundingClientRect();
@@ -1239,29 +1191,31 @@
             const ca = _ => S.curveFrac;                        // curvatura constante por arista
             const V = isC ? null : computeVerts(cx, cy, Re, S.N, S.rotDeg);
             const r = isC ? Re : clampedR(V, S.cornerFrac * Re);
-            // Si el giro es horizontal rotamos los vértices 90° para trabajar siempre en "vertical".
-            const Veff = !isC && S.axisH ? V.map(v => [cx + (v[1] - cy), cy - (v[0] - cx)]) : V;
+            // Veff: V pre-rotado para que drawCantoPoly trabaje siempre con eje vertical.
+            const cantoRot = (90 - S.axisAngle) * PI / 180;
+            const cosCR = Math.cos(cantoRot), sinCR = Math.sin(cantoRot);
+            const Veff = !isC ? V.map(v => {
+                const dx = v[0] - cx, dy = v[1] - cy;
+                return [cx + dx * cosCR - dy * sinCR, cy + dx * sinCR + dy * cosCR];
+            }) : null;
             // Matriz de transformación para proyectar la cara frontal (compresión en un eje).
-            const fm = S.axisH
-                ? [1, 0, 0, sc, 0, cy * (1 - sc)]
-                : [sc, 0, 0, 1, cx * (1 - sc), 0];
+            const axR = S.axisAngle * PI / 180;
+            const cosAx = Math.cos(axR), sinAx = Math.sin(axR);
+            const fmA = cosAx * cosAx + sc * sinAx * sinAx;
+            const fmB = (1 - sc) * sinAx * cosAx;
+            const fmD = sinAx * sinAx + sc * cosAx * cosAx;
+            const fm = [fmA, fmB, fmB, fmD, cx * (1 - fmA) - cy * fmB, cy * (1 - fmD) - cx * fmB];
+            const cantoCanvasAngle = (S.axisAngle - 90) * PI / 180;
+            const cosCCA = Math.cos(cantoCanvasAngle), sinCCA = Math.sin(cantoCanvasAngle);
 
             // Colores dependientes del tema.
             const dk = window.matchMedia('(prefers-color-scheme:dark)').matches;
 
-            // ─── Modelo de iluminación Lambert (activo cuando la sombra está visible) ──
-            //
-            // Sistema de coordenadas 3D de pantalla: X=derecha, Y=abajo, Z=hacia viewer.
-            // El vector "hacia la luz" (lx, ly, lz) se obtiene invirtiendo la dirección
-            // en que cae la sombra (kx, ky) y completando con el seno de la elevación.
-            //
-            // Normales:
-            //   Cara    → [0, 0, 1]          (siempre apunta al viewer)
-            //   Canto   → [sc·ns, 0, sinA]   para axisH=false  (giro en Y)
-            //           → [0, sc·ns, sinA]   para axisH=true   (giro en X)
-            //
-            // Cuando la sombra está desactivada los factores son 1 y los colores son
-            // exactamente los valores originales.
+            // ─── Iluminación Lambert (sólo cuando la sombra está activa) ──────────
+            // Normales 3D (X=der, Y=abajo, Z=viewer):
+            //   Cara  → (0, 0, 1)
+            //   Canto → (sc·ns·sinAx, −sc·ns·cosAx, sinA)  [perpendicular al eje]
+            // Con sombra desactivada los factores son 1 (colores originales).
             const AMBIENT = 0.35;
             let faceIllum = 1.0, cantoIllum = 1.0;
             if (S.showShadow) {
@@ -1273,9 +1227,7 @@
                 // Cara: dot([0,0,1], luz) = lz = sin(el).
                 faceIllum = Math.max(AMBIENT, lz);
                 // Canto: dot(normal_canto, luz).
-                const cnDot = S.axisH
-                    ? sc * ns * ly + sinA * lz
-                    : sc * ns * lx + sinA * lz;
+                const cnDot = sc * ns * sinAx * lx - sc * ns * cosAx * ly + sinA * lz;
                 cantoIllum = Math.max(AMBIENT, cnDot);
             }
 
@@ -1296,26 +1248,30 @@
             // Centramos el conjunto cara+canto aplicando un shift global opuesto al canto.
             const shift = hasE ? ns * rimW / 2 : 0;
             ctx.save();
-            if (S.axisH) ctx.translate(0, -shift);
-            else ctx.translate(-shift, 0);
+            ctx.translate(-shift * sinAx, +shift * cosAx);
 
             // Feature de apoyo: calculado una sola vez; usado por sombra e indicador.
             // Círculo: contacto en x=cx → xMin=xMax=cx.
             // Polígono: computeSupportFeature rastrea también el extent X.
             const support = isC ? (() => {
-                    const cantoBelowY = hasE && S.axisH && ns > 0;
-                    const sy = (S.axisH ? cy + Math.abs(sc) * Re : cy + Re) + (cantoBelowY ? rimW : 0);
-                    // Canto hacia abajo (axisH=true, ns=1): toda la cara circular en contacto.
-                    // Sin canto, o canto lateral (axisH=false): un solo punto en x=cx.
-                    const sxMin = cantoBelowY ? cx - Re : cx;
-                    const sxMax = cantoBelowY ? cx + Re : cx;
+                    const semiY = Math.hypot(fmB, fmD);
+                    const faceBottomY = cy + Re * semiY;
+                    const cantoAddY = hasE ? Math.max(0, -ns * rimW * cosAx) : 0;
+                    const sy = faceBottomY + cantoAddY;
+                    const bottomX = semiY > 1e-6 ? cx + Re * fmB * (fmA + fmD) / semiY : cx;
+                    let sxMin, sxMax;
+                    if (cantoAddY > 0) {
+                        const cantoAddX = ns * rimW * sinAx;
+                        sxMin = Math.min(bottomX, bottomX + cantoAddX);
+                        sxMax = Math.max(bottomX, bottomX + cantoAddX);
+                    } else {
+                        sxMin = sxMax = bottomX;
+                    }
                     const isFlatC = Math.abs(sc) > 0.98;
-                    const stype = isFlatC ? 'face'
-                        : sxMax - sxMin > 1.5 ? 'edge'
-                            : 'vertex';
+                    const stype = isFlatC ? 'face' : sxMax - sxMin > 1.5 ? 'edge' : 'vertex';
                     return {y: sy, xMin: sxMin, xMax: sxMax, type: stype};
                 })()
-                : computeSupportFeature(V, r, Re, ca, cx, cy, sc, S.axisH, rimW, ns, hasE);
+                : computeSupportFeature(V, r, Re, ca, cx, cy, sc, axR, rimW, ns, hasE);
 
             // ─── Sombra ─────────────────────────────────────────────────────
             if (S.showShadow) {
@@ -1344,19 +1300,16 @@
                 // Canto (mismos cálculos que el render normal)
                 if (hasE) {
                     if (isC) {
-                        drawCircleCanto(ctx, cx, cy, Re, rimW, sc, ns, S.axisH);
-                        ctx.fillStyle = shadowFill;
-                        ctx.fill();
+                        ctxRotAround(ctx, cantoCanvasAngle, cx, cy, () => {
+                            drawCircleCanto(ctx, cx, cy, Re, rimW, sc, ns);
+                            ctx.fillStyle = shadowFill;
+                            ctx.fill();
+                        });
                     } else {
-                        ctx.save();
-                        if (S.axisH) {
-                            ctx.translate(cx, cy);
-                            ctx.rotate(PI / 2);
-                            ctx.translate(-cx, -cy);
-                        }
-                        ctx.beginPath();
-                        drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy, shadowFill, true);
-                        ctx.restore();
+                        ctxRotAround(ctx, cantoCanvasAngle, cx, cy, () => {
+                            ctx.beginPath();
+                            drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy, shadowFill, true);
+                        });
                     }
                 }
 
@@ -1366,30 +1319,26 @@
             // ─── Canto ─────────────────────────────────────────────────────
             if (hasE) {
                 if (isC) {
-                    drawCircleCanto(ctx, cx, cy, Re, rimW, sc, ns, S.axisH);
-                    ctx.fillStyle = edgeC;
-                    ctx.fill();
-                    ctx.strokeStyle = '#FFD966';
-                    ctx.lineWidth = 2.0;
-                    ctx.stroke();
+                    ctxRotAround(ctx, cantoCanvasAngle, cx, cy, () => {
+                        drawCircleCanto(ctx, cx, cy, Re, rimW, sc, ns);
+                        ctx.fillStyle = edgeC;
+                        ctx.fill();
+                        ctx.strokeStyle = '#FFD966';
+                        ctx.lineWidth = 2.0;
+                        ctx.stroke();
+                    });
                 } else {
-                    ctx.save();
-                    // Rotamos 90° si el eje es horizontal para reutilizar la versión "vertical".
-                    if (S.axisH) {
-                        ctx.translate(cx, cy);
-                        ctx.rotate(PI / 2);
-                        ctx.translate(-cx, -cy);
-                    }
-                    ctx.beginPath();
-                    const poles = drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy, edgeC);
-                    ctx.restore();
+                    const poles = ctxRotAround(ctx, cantoCanvasAngle, cx, cy, () => {
+                        ctx.beginPath();
+                        return drawCantoPoly(ctx, Veff, r, Re, ca, sc, rimW, ns, cx, cy, edgeC);
+                    });
 
-                    // Marcadores de polos (opcionales).
+                    // Marcadores de polos: de-rotamos del frame del canto al screen.
                     if (S.showPole && poles) {
-                        // De-rotamos las coords al frame original para pintar sobre todo.
-                        // ctx.rotate(PI/2) en canvas manda X-rot→abajo y Y-rot→izquierda;
-                        // la inversa es: screen = [cx-(py-cy), cy+(px-cx)].
-                        const p2s = p => S.axisH ? [cx - (p[1] - cy), cy + (p[0] - cx)] : p;
+                        const p2s = p => [
+                            cx + (p[0] - cx) * cosCCA - (p[1] - cy) * sinCCA,
+                            cy + (p[0] - cx) * sinCCA + (p[1] - cy) * cosCCA
+                        ];
                         for (const pole of [poles.pA, poles.pC]) {
                             const [px, py] = p2s(pole);
                             drawDot(ctx, px, py, 5, '#D85A30', 'white', 1.5);
@@ -1459,9 +1408,11 @@
                 ctx.restore(); // ← sale del scope fm (shift externo sigue activo)
 
                 if (S.showTS || S.showTE) {
-                    // Proyección dependiente del eje (eje horizontal comprime en Y).
-                    const pj = p => S.axisH ? [p[0], cy + (p[1] - cy) * sc]
-                        : [cx + (p[0] - cx) * sc, p[1]];
+                    // Proyección general de la cara.
+                    const pj = p => [
+                        cx + (p[0] - cx) * fmA + (p[1] - cy) * fmB,
+                        cy + (p[0] - cx) * fmB + (p[1] - cy) * fmD
+                    ];
                     const drawMarkers = (pts, color) => pts.forEach(t => {
                         const [px, py] = pj(t);
                         drawDot(ctx, px, py, 4, color);
@@ -1525,6 +1476,7 @@
             {id: 'sCurve', pId: 'pCurve', vId: 'vCurve', set: v => S.curveFrac = v / 100, fmt: v => v},
             {id: 'sRim', pId: 'pRim', vId: 'vRim', set: v => S.rimFrac = v / 100, fmt: v => v + '%'},
             {id: 'sRot', pId: 'pRot', vId: 'vRot', set: v => S.rotDeg = +v, fmt: v => v + '°'},
+            {id: 'sAxis', pId: 'pAxis', vId: 'vAxis', set: v => S.axisAngle = +v, fmt: v => v + '°'},
             {id: 'sShdDir', pId: 'pShdDir', vId: 'vShdDir', set: v => S.shadowDir = +v, fmt: v => v + '°'},
             {id: 'sShdEl', pId: 'pShdEl', vId: 'vShdEl', set: v => S.shadowElev = +v, fmt: v => v + '°'},
         ];
@@ -1670,21 +1622,6 @@
             };
         }
 
-        // Grupo de chips tipo radio (una única activa a la vez).
-        function bindRadioChips(ids, setter) {
-            const els = ids.map(id => document.getElementById(id));
-            els.forEach((el, i) => {
-                el.onclick = () => {
-                    els.forEach((e, j) => e.classList.toggle('on', i === j));
-                    setter(i);
-                    draw();
-                };
-            });
-        }
-
-        bindRadioChips(['cV', 'cH'], i => {
-            S.axisH = (i === 1);
-        });
         bindToggleChip('cShadow', on => {
             S.showShadow = on;
             document.querySelectorAll('.shadow-row').forEach(el => el.style.display = on ? '' : 'none');
