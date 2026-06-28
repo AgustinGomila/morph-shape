@@ -257,6 +257,38 @@
             box-shadow: 0 2px 8px rgba(99, 102, 241, 0.45);
         }
 
+        .loop-btn {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            border: 1.5px solid var(--color-border-secondary);
+            background: transparent;
+            color: var(--color-text-secondary);
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.18s ease;
+            padding: 0;
+            user-select: none;
+        }
+
+        .loop-btn:hover {
+            border-color: var(--color-accent);
+            color: var(--color-accent);
+            transform: scale(1.12);
+        }
+
+        .loop-btn.loop {
+            background: var(--color-accent);
+            border-color: var(--color-accent);
+            color: white;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.45);
+        }
+
         @media (max-width: 480px) {
             .controls-card {
                 padding: 14px 16px;
@@ -282,6 +314,12 @@
                 height: 22px;
                 font-size: 8px;
             }
+
+            .loop-btn {
+                width: 22px;
+                height: 22px;
+                font-size: 12px;
+            }
         }
     </style>
 </head>
@@ -296,18 +334,21 @@
             <input type="range" id="sAngle" min="0" max="360" value="30" step="1">
             <span class="v" id="vAngle">30°</span>
             <button class="play-btn" id="pAngle" title="Animar">▶</button>
+            <button class="loop-btn" id="lAngle" title="Modo: ida y vuelta">↔</button>
         </div>
         <div class="row">
             <label>Rotación forma</label>
             <input type="range" id="sRot" min="0" max="360" value="270" step="1">
             <span class="v" id="vRot">270°</span>
             <button class="play-btn" id="pRot" title="Animar">▶</button>
+            <button class="loop-btn" id="lRot" title="Modo: ida y vuelta">↔</button>
         </div>
         <div class="row">
             <label>Orientación eje</label>
             <input type="range" id="sAxis" min="0" max="360" value="90" step="1">
             <span class="v" id="vAxis">90°</span>
             <button class="play-btn" id="pAxis" title="Animar">&#9654;</button>
+            <button class="loop-btn" id="lAxis" title="Modo: ida y vuelta">↔</button>
         </div>
         <div class="row">
             <label>Lados</label>
@@ -1478,7 +1519,7 @@
 
         // Configuración declarativa de cada slider + id del botón de animación.
         const SLIDERS = [
-            {id: 'sAngle', pId: 'pAngle', vId: 'vAngle', set: v => S.angle = +v, fmt: v => v + '°'},
+            {id: 'sAngle', pId: 'pAngle', vId: 'vAngle', loopId: 'lAngle', set: v => S.angle = +v, fmt: v => v + '°'},
             {id: 'sN', pId: 'pN', vId: 'vN', set: v => S.N = +v, fmt: v => +v === 1 ? '●' : v},
             {
                 id: 'sCorner',
@@ -1489,16 +1530,21 @@
             },
             {id: 'sCurve', pId: 'pCurve', vId: 'vCurve', set: v => S.curveFrac = v / 100, fmt: v => v},
             {id: 'sRim', pId: 'pRim', vId: 'vRim', set: v => S.rimFrac = v / 100, fmt: v => v + '%'},
-            {id: 'sRot', pId: 'pRot', vId: 'vRot', set: v => S.rotDeg = +v, fmt: v => v + '°'},
-            {id: 'sAxis', pId: 'pAxis', vId: 'vAxis', set: v => S.axisAngle = +v, fmt: v => v + '°'},
+            {id: 'sRot', pId: 'pRot', vId: 'vRot', loopId: 'lRot', set: v => S.rotDeg = +v, fmt: v => v + '°'},
+            {id: 'sAxis', pId: 'pAxis', vId: 'vAxis', loopId: 'lAxis', set: v => S.axisAngle = +v, fmt: v => v + '°'},
             {id: 'sShdDir', pId: 'pShdDir', vId: 'vShdDir', set: v => S.shadowDir = +v, fmt: v => v + '°'},
             {id: 'sShdEl', pId: 'pShdEl', vId: 'vShdEl', set: v => S.shadowElev = +v, fmt: v => v + '°'},
         ];
 
         // ╭──────────────────────────────────────────────────────────────────╮
-        // │  Motor de animación (ping-pong por RAF)                          │
+        // │  Motor de animación por RAF                                      │
         // │  Cada slider tiene estado independiente: t ∈ [0,1] y dir ±1.    │
         // │  Tiempo de un barrido min→max: SWEEP_S segundos.                 │
+        // │  Dos modos (a.loop):                                             │
+        // │   · false → ida y vuelta (ping-pong): rebota en los extremos.   │
+        // │   · true  → bucle circular: el valor envuelve (max→min) y avanza │
+        // │             siempre en el mismo sentido. Sólo para sliders       │
+        // │             angulares 0–360, donde 360°≡0° hace el salto continuo.│
         // ╰──────────────────────────────────────────────────────────────────╯
         const SWEEP_S = 5;          // segundos de min a max (y de max a min)
         const anims = {};         // keyed by slider id
@@ -1538,13 +1584,20 @@
 
                 a.t += a.dir * dt / SWEEP_S;
 
-                if (a.t >= 1) {
-                    a.t = 1;
-                    a.dir = -1;
-                }
-                if (a.t <= 0) {
-                    a.t = 0;
-                    a.dir = 1;
+                if (a.loop) {
+                    // Bucle circular: el valor envuelve sin rebotar (360°→0° es
+                    // continuo para ángulos). dir se mantiene en +1.
+                    if (a.t >= 1) a.t -= 1;
+                    else if (a.t < 0) a.t += 1;
+                } else {
+                    if (a.t >= 1) {
+                        a.t = 1;
+                        a.dir = -1;
+                    }
+                    if (a.t <= 0) {
+                        a.t = 0;
+                        a.dir = 1;
+                    }
                 }
 
                 const raw = min + a.t * (max - min);
@@ -1587,7 +1640,7 @@
             updateSliderFill(el);
 
             // Estado de animación para este slider
-            const a = {playing: false, t: 0, dir: 1};
+            const a = {playing: false, t: 0, dir: 1, loop: false};
             anims[cfg.id] = a;
 
             // Sync t inicial con el valor actual del slider
@@ -1612,9 +1665,14 @@
                 a.playing = !a.playing;
                 if (a.playing) {
                     syncT();
-                    // Si estamos en un extremo, arrancamos hacia el lado contrario
-                    if (a.t >= 1) a.dir = -1;
-                    if (a.t <= 0) a.dir = 1;
+                    if (a.loop) {
+                        // El bucle circular avanza siempre hacia adelante.
+                        a.dir = 1;
+                    } else {
+                        // Si estamos en un extremo, arrancamos hacia el lado contrario
+                        if (a.t >= 1) a.dir = -1;
+                        if (a.t <= 0) a.dir = 1;
+                    }
                     btn.classList.add('playing');
                     btn.textContent = '⏸';
                     ensureRAF();
@@ -1623,6 +1681,24 @@
                     btn.textContent = '▶';
                 }
             });
+
+            // Botón de modo de bucle (sólo sliders angulares 0–360).
+            if (cfg.loopId) {
+                const lb = document.getElementById(cfg.loopId);
+                if (lb) {
+                    const syncLoopBtn = () => {
+                        lb.classList.toggle('loop', a.loop);
+                        lb.textContent = a.loop ? '↻' : '↔';
+                        lb.title = a.loop ? 'Modo: bucle circular' : 'Modo: ida y vuelta';
+                    };
+                    syncLoopBtn();
+                    lb.addEventListener('click', () => {
+                        a.loop = !a.loop;
+                        if (a.loop) a.dir = 1;   // el bucle siempre avanza hacia adelante
+                        syncLoopBtn();
+                    });
+                }
+            }
         });
 
         // Chip de toggle (activa/desactiva una bandera).
